@@ -210,6 +210,7 @@ flowchart TB
   %% EKS cluster
   %% =========================
   subgraph EKS["Amazon EKS Cluster"]
+    
     subgraph LoggingNS["Namespace: logging"]
       Strimzi["Strimzi Operator<br/>Kafka CRDs"]
       ECK["ECK Operator<br/>Elasticsearch and Kibana CRDs"]
@@ -220,8 +221,10 @@ flowchart TB
 
       FluentBit["Fluent Bit DaemonSet<br/>one pod per node"]
       Vector["Vector Aggregator StatefulSet<br/>disk buffer + routing"]
+
       ES["Elasticsearch<br/>3 master + hot data + warm data"]
       Kibana["Kibana<br/>dashboards and log search"]
+
       ElastAlert["ElastAlert<br/>error spike rules"]
       IndexJob["Elasticsearch Index Setup Job<br/>ILM + template"]
     end
@@ -235,11 +238,17 @@ flowchart TB
     NodeLogs["/var/log/containers/*.log<br/>stdout and stderr"]
   end
 
+  %% =========================
+  %% AWS Services
+  %% =========================
   subgraph AWS["AWS Services"]
     S3["Amazon S3<br/>long-term archive"]
     IAM["IAM Role for Service Account<br/>IRSA"]
   end
 
+  %% =========================
+  %% Connections
+  %% =========================
   Helm --> Strimzi
   Helm --> ECK
   Helm --> FluentBit
@@ -270,6 +279,57 @@ flowchart TB
   ES --> ElastAlert
 
   IAM --> Vector
+
+  %% =========================
+  %% Styling
+  %% =========================
+
+  %% Main sections
+  style GitHub fill:#1e293b,stroke:#94a3b8,stroke-width:2px,color:#ffffff
+  style EKS fill:#0f172a,stroke:#38bdf8,stroke-width:2px,color:#ffffff
+  style AWS fill:#1e1b4b,stroke:#a78bfa,stroke-width:2px,color:#ffffff
+
+  %% Logging namespace
+  style LoggingNS fill:#111827,stroke:#06b6d4,stroke-width:2px,color:#ffffff
+  style AppNamespaces fill:#1f2937,stroke:#10b981,stroke-width:2px,color:#ffffff
+
+  %% GitOps + deployment
+  style Engineer fill:#2563eb,stroke:#bfdbfe,stroke-width:2px,color:#ffffff
+  style Chart fill:#334155,stroke:#cbd5e1,stroke-width:2px,color:#ffffff
+  style Values fill:#334155,stroke:#cbd5e1,stroke-width:2px,color:#ffffff
+  style Helm fill:#7c3aed,stroke:#ddd6fe,stroke-width:2px,color:#ffffff
+
+  %% Operators
+  style Strimzi fill:#9333ea,stroke:#f3e8ff,stroke-width:2px,color:#ffffff
+  style ECK fill:#9333ea,stroke:#f3e8ff,stroke-width:2px,color:#ffffff
+
+  %% Kafka pipeline
+  style Kafka fill:#ea580c,stroke:#ffedd5,stroke-width:2px,color:#ffffff
+  style TopicRaw fill:#f97316,stroke:#ffedd5,stroke-width:2px,color:#ffffff
+  style TopicDLQ fill:#dc2626,stroke:#fecaca,stroke-width:2px,color:#ffffff
+
+  %% Log collection
+  style FluentBit fill:#0891b2,stroke:#cffafe,stroke-width:2px,color:#ffffff
+  style Vector fill:#0f766e,stroke:#ccfbf1,stroke-width:2px,color:#ffffff
+  style NodeLogs fill:#475569,stroke:#cbd5e1,stroke-width:2px,color:#ffffff
+
+  %% Elasticsearch stack
+  style ES fill:#16a34a,stroke:#dcfce7,stroke-width:2px,color:#ffffff
+  style Kibana fill:#ca8a04,stroke:#fef9c3,stroke-width:2px,color:#ffffff
+  style ElastAlert fill:#b91c1c,stroke:#fee2e2,stroke-width:2px,color:#ffffff
+  style IndexJob fill:#4f46e5,stroke:#c7d2fe,stroke-width:2px,color:#ffffff
+
+  %% Applications
+  style App1 fill:#059669,stroke:#d1fae5,stroke-width:2px,color:#ffffff
+  style App2 fill:#059669,stroke:#d1fae5,stroke-width:2px,color:#ffffff
+  style AppN fill:#059669,stroke:#d1fae5,stroke-width:2px,color:#ffffff
+
+  %% AWS
+  style S3 fill:#7c2d12,stroke:#fed7aa,stroke-width:2px,color:#ffffff
+  style IAM fill:#4338ca,stroke:#c7d2fe,stroke-width:2px,color:#ffffff
+
+  %% Link styling
+  linkStyle default stroke:#94a3b8,stroke-width:2px
 ```
 
 ---
@@ -507,7 +567,7 @@ This deployment guide uses Helm for installation and release management. No shel
 ### Step 1: Clone the repository
 
 ```bash
-git clone <your-repository-url>
+git clone git@github.com:pramodksahoo/centralized-logging-eks.git
 cd centralized-logging-eks-helm
 ```
 
