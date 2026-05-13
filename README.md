@@ -567,7 +567,7 @@ This deployment guide uses Helm for installation and release management. No shel
 ### Step 1: Clone the repository
 
 ```bash
-git clone <your-repository-url>
+git clone git@github.com:pramodksahoo/centralized-logging-eks.git
 cd centralized-logging-eks-helm
 ```
 
