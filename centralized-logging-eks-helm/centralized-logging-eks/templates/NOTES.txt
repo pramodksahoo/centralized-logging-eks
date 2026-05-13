@@ -1,0 +1,29 @@
+Centralized logging Helm release installed.
+
+Release name:
+  {{ .Release.Name }}
+
+Namespace:
+  {{ .Release.Namespace }}
+
+Recommended checks:
+  kubectl get pods -n {{ .Release.Namespace }}
+  kubectl get kafka,kafkatopic -n {{ .Release.Namespace }}
+  kubectl get elasticsearch,kibana -n {{ .Release.Namespace }}
+
+Kibana port-forward:
+  kubectl port-forward -n {{ .Release.Namespace }} svc/{{ include "cl.kibanaName" . }}-kb-http 5601:5601
+
+Elastic username:
+  elastic
+
+Elastic password:
+  kubectl get secret {{ include "cl.elasticPasswordSecret" . }} -n {{ .Release.Namespace }} -o go-template='{{ "{{" }}.data.elastic | base64decode{{ "}}" }}{{ "{{" }}"\n"{{ "}}" }}'
+
+Kibana data view:
+  kubernetes-logs-*
+
+S3 mode:
+  {{ .Values.s3.authMode }}
+
+If operators were installed as dependencies, give Strimzi and ECK time to reconcile Kafka and Elasticsearch resources.

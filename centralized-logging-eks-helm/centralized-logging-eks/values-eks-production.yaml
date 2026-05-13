@@ -1,0 +1,72 @@
+# Example production values for EKS.
+# Edit before applying.
+
+global:
+  clusterName: prod-eks
+  environment: prod
+
+aws:
+  region: ap-south-1
+
+s3:
+  enabled: true
+  bucket: REPLACE_WITH_YOUR_LOG_ARCHIVE_BUCKET
+  prefix: centralized-logging
+  authMode: irsa
+  existingSecret: ""
+  createSecret: false
+  serviceAccountAnnotations:
+    eks.amazonaws.com/role-arn: arn:aws:iam::<account-id>:role/platform-logging-vector-s3
+
+kafka:
+  controllers:
+    replicas: 3
+    storageClassName: gp3
+    storageSize: 100Gi
+  brokers:
+    replicas: 5
+    storageClassName: gp3
+    storageSize: 500Gi
+  topics:
+    raw:
+      partitions: 96
+    dlq:
+      partitions: 24
+
+elasticsearch:
+  masters:
+    count: 3
+    storageClassName: gp3
+    storageSize: 50Gi
+  hotData:
+    count: 6
+    storageClassName: gp3
+    storageSize: 1Ti
+  warmData:
+    count: 3
+    storageClassName: gp3
+    storageSize: 2Ti
+  ilm:
+    hotRolloverMaxAge: 1d
+    warmMinAge: 7d
+    deleteMinAge: 30d
+
+vector:
+  replicas: 6
+  pvc:
+    storageClassName: gp3
+    storageSize: 100Gi
+  hpa:
+    enabled: true
+    minReplicas: 6
+    maxReplicas: 20
+
+kibana:
+  publicBaseUrl: https://kibana.example.com
+  ingress:
+    enabled: false
+    className: alb
+    host: kibana.example.com
+    annotations:
+      alb.ingress.kubernetes.io/scheme: internal
+      alb.ingress.kubernetes.io/target-type: ip

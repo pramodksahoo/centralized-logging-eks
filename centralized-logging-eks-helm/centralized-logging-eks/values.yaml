@@ -1,0 +1,306 @@
+# Centralized Logging for EKS
+# Recommended release name: platform-logging
+
+nameOverride: ""
+fullnameOverride: ""
+
+operators:
+  # Set these to false if Strimzi or ECK are already installed and managed separately.
+  strimzi:
+    enabled: true
+  eck:
+    enabled: true
+
+# Values passed to the Strimzi operator dependency.
+# These are intentionally minimal; use native Strimzi chart values when needed.
+strimzi-kafka-operator:
+  watchAnyNamespace: false
+  # If your chart is installed into namespace logging, Strimzi will watch that namespace by default in many installs.
+  # For restricted environments, set the exact operator values required by your platform team.
+
+# Values passed to the ECK operator dependency.
+eck-operator:
+  installCRDs: true
+
+namespace:
+  # Helm still needs --namespace and normally --create-namespace.
+  # This option creates a Namespace object so labels can be managed by the release.
+  create: false
+  labels: {}
+  annotations: {}
+
+global:
+  clusterName: prod-eks
+  environment: prod
+  imagePullPolicy: IfNotPresent
+  priorityClasses:
+    create: true
+    criticalName: logging-critical
+    agentName: logging-agent
+  commonLabels:
+    platform.altimetrik.com/component: centralized-logging
+
+aws:
+  region: ap-south-1
+
+s3:
+  enabled: true
+  bucket: REPLACE_WITH_YOUR_LOG_ARCHIVE_BUCKET
+  prefix: logs
+  # secret or irsa
+  authMode: secret
+  # When createSecret=false, set existingSecret to a pre-created secret name.
+  existingSecret: logging-s3-archive
+  createSecret: false
+  accessKeyId: ""
+  secretAccessKey: ""
+  # For EKS IRSA, set s3.authMode=irsa and add role annotation below.
+  serviceAccountAnnotations: {}
+  # Example:
+  # serviceAccountAnnotations:
+  #   eks.amazonaws.com/role-arn: arn:aws:iam::<account-id>:role/platform-logging-vector-s3
+
+kafka:
+  enabled: true
+  apiVersion: kafka.strimzi.io/v1
+  nameOverride: ""
+  version: "4.2.0"
+  # Optional. Leave empty to let Strimzi choose the default metadata version.
+  metadataVersion: ""
+  controllers:
+    replicas: 3
+    storageSize: 100Gi
+    storageClassName: gp3
+    deleteClaim: false
+    resources:
+      requests:
+        cpu: "1"
+        memory: 2Gi
+      limits:
+        cpu: "2"
+        memory: 4Gi
+  brokers:
+    replicas: 5
+    storageSize: 500Gi
+    storageClassName: gp3
+    deleteClaim: false
+    resources:
+      requests:
+        cpu: "2"
+        memory: 8Gi
+      limits:
+        cpu: "4"
+        memory: 12Gi
+  config:
+    auto.create.topics.enable: "false"
+    default.replication.factor: 3
+    min.insync.replicas: 2
+    offsets.topic.replication.factor: 3
+    transaction.state.log.replication.factor: 3
+    transaction.state.log.min.isr: 2
+    num.partitions: 12
+    log.retention.hours: 24
+    log.segment.bytes: 1073741824
+    message.max.bytes: 2097152
+    replica.fetch.max.bytes: 3145728
+    compression.type: producer
+    group.initial.rebalance.delay.ms: 3000
+  topics:
+    raw:
+      name: logs.raw
+      partitions: 96
+      replicas: 3
+      retentionMs: 86400000
+      segmentBytes: 1073741824
+      compressionType: zstd
+    dlq:
+      name: logs.dlq
+      partitions: 24
+      replicas: 3
+      retentionMs: 604800000
+      segmentBytes: 536870912
+      compressionType: zstd
+  podAntiAffinity: true
+
+elasticsearch:
+  enabled: true
+  nameOverride: ""
+  version: "9.4.1"
+  volumeClaimDeletePolicy: DeleteOnScaledownOnly
+  tlsSelfSigned: true
+  ilm:
+    enabled: true
+    hotRolloverMaxAge: 1d
+    hotRolloverMaxPrimaryShardSize: 50gb
+    warmMinAge: 7d
+    deleteMinAge: 30d
+    numberOfShards: 6
+    numberOfReplicas: 1
+    refreshInterval: 30s
+    totalFieldsLimit: 2000
+  masters:
+    count: 3
+    storageSize: 50Gi
+    storageClassName: gp3
+    heap: 2g
+    resources:
+      requests:
+        cpu: "1"
+        memory: 4Gi
+      limits:
+        cpu: "2"
+        memory: 4Gi
+  hotData:
+    count: 6
+    storageSize: 1Ti
+    storageClassName: gp3
+    heap: 8g
+    resources:
+      requests:
+        cpu: "4"
+        memory: 16Gi
+      limits:
+        cpu: "8"
+        memory: 16Gi
+  warmData:
+    count: 3
+    storageSize: 2Ti
+    storageClassName: gp3
+    heap: 6g
+    resources:
+      requests:
+        cpu: "2"
+        memory: 12Gi
+      limits:
+        cpu: "4"
+        memory: 12Gi
+  sysctlInitContainer:
+    enabled: true
+  podAntiAffinity: true
+
+kibana:
+  enabled: true
+  nameOverride: ""
+  count: 2
+  publicBaseUrl: https://kibana.example.com
+  resources:
+    requests:
+      cpu: 500m
+      memory: 2Gi
+    limits:
+      cpu: "2"
+      memory: 4Gi
+  ingress:
+    enabled: false
+    className: alb
+    host: kibana.example.com
+    tlsSecretName: ""
+    annotations: {}
+
+fluentBit:
+  enabled: true
+  image:
+    repository: cr.fluentbit.io/fluent/fluent-bit
+    tag: "4.0.4"
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: "1"
+      memory: 768Mi
+  metricsPort: 2020
+  bufferPath: /var/lib/fluent-bit
+  memBufLimit: 256MB
+  storageBacklogMemLimit: 256M
+  flush: 1
+  logLevel: info
+  excludePath: /var/log/containers/*_logging_*.log
+  kafka:
+    requiredAcks: "1"
+    workers: 2
+    messageTimeoutMs: 300000
+  tolerations:
+    - operator: Exists
+  nodeSelector: {}
+  affinity: {}
+  annotations: {}
+
+vector:
+  enabled: true
+  nameOverride: ""
+  image:
+    repository: timberio/vector
+    tag: "0.48.0-debian"
+  replicas: 6
+  minReadySeconds: 10
+  apiPort: 8686
+  dataDir: /vector-data
+  pvc:
+    storageSize: 100Gi
+    storageClassName: gp3
+  resources:
+    requests:
+      cpu: "2"
+      memory: 4Gi
+    limits:
+      cpu: "4"
+      memory: 8Gi
+  kafka:
+    groupId: vector-logging-aggregator
+    autoOffsetReset: earliest
+    commitIntervalMs: 5000
+    sessionTimeoutMs: 30000
+  elasticsearch:
+    diskBufferBytes: 21474836480
+    batchMaxEvents: 5000
+    batchTimeoutSecs: 5
+    retryAttempts: 10
+    requestTimeoutSecs: 60
+  s3:
+    archiveDiskBufferBytes: 53687091200
+    errorDiskBufferBytes: 10737418240
+    batchMaxBytes: 104857600
+    batchTimeoutSecs: 300
+    retryAttempts: 20
+    requestTimeoutSecs: 120
+  hpa:
+    enabled: true
+    minReplicas: 6
+    maxReplicas: 20
+    cpuAverageUtilization: 80
+  podDisruptionBudget:
+    enabled: true
+    minAvailable: 4
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+elastalert:
+  enabled: true
+  image:
+    repository: jertel/elastalert2
+    tag: "2.29.0"
+  replicas: 2
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+    limits:
+      cpu: "1"
+      memory: 1Gi
+  podDisruptionBudget:
+    enabled: true
+    minAvailable: 1
+  alertOutput: debug
+  rules:
+    highErrorRate:
+      enabled: true
+      numEvents: 100
+      timeframeMinutes: 5
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+networkPolicies:
+  enabled: false

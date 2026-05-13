@@ -1,0 +1,6 @@
+{{- if and .Values.s3.enabled (eq .Values.s3.authMode "secret") (not .Values.s3.createSecret) (not .Values.s3.existingSecret) }}
+{{- fail "s3.authMode=secret requires either s3.createSecret=true or s3.existingSecret to be set" }}
+{{- end }}
+{{- if and .Values.s3.enabled (eq .Values.s3.authMode "irsa") (empty .Values.s3.serviceAccountAnnotations) }}
+{{- fail "s3.authMode=irsa requires s3.serviceAccountAnnotations, usually eks.amazonaws.com/role-arn" }}
+{{- end }}

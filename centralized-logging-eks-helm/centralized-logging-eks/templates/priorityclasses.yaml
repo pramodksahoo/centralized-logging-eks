@@ -1,0 +1,21 @@
+{{- if .Values.global.priorityClasses.create }}
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: {{ .Values.global.priorityClasses.criticalName }}
+  labels:
+{{ include "cl.labels" . | indent 4 }}
+value: 900000
+globalDefault: false
+description: "Priority for centralized logging stateful components."
+---
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: {{ .Values.global.priorityClasses.agentName }}
+  labels:
+{{ include "cl.labels" . | indent 4 }}
+value: 800000
+globalDefault: false
+description: "Priority for node-level logging agents."
+{{- end }}

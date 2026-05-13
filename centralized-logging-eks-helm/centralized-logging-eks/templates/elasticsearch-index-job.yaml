@@ -1,0 +1,125 @@
+{{- if and .Values.elasticsearch.enabled .Values.elasticsearch.ilm.enabled }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "cl.fullname" . }}-es-index-setup
+  namespace: {{ include "cl.namespace" . }}
+  labels:
+{{ include "cl.labels" . | indent 4 }}
+  annotations:
+    "helm.sh/hook": post-install,post-upgrade
+    "helm.sh/hook-weight": "20"
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: 12
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: es-index-setup
+        app.kubernetes.io/instance: {{ .Release.Name }}
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: setup
+          image: curlimages/curl:8.13.0
+          imagePullPolicy: {{ .Values.global.imagePullPolicy }}
+          env:
+            - name: ELASTIC_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "cl.elasticPasswordSecret" . }}
+                  key: elastic
+          volumeMounts:
+            - name: es-ca
+              mountPath: /mnt/es-ca
+              readOnly: true
+          command:
+            - /bin/sh
+            - -ec
+            - |
+              ES="https://{{ include "cl.esName" . }}-es-http.{{ include "cl.namespace" . }}.svc:9200"
+              AUTH="elastic:${ELASTIC_PASSWORD}"
+              CA="/mnt/es-ca/ca.crt"
+
+              echo "Waiting for Elasticsearch..."
+              until curl -fsS --cacert "${CA}" -u "${AUTH}" "${ES}/_cluster/health?wait_for_status=yellow&timeout=60s"; do
+                sleep 10
+              done
+
+              echo "Creating ILM policy..."
+              curl -fsS --cacert "${CA}" -u "${AUTH}" \
+                -H "Content-Type: application/json" \
+                -X PUT "${ES}/_ilm/policy/kubernetes-logs-ilm" \
+                -d '{
+                  "policy": {
+                    "phases": {
+                      "hot": {
+                        "actions": {
+                          "rollover": {
+                            "max_age": "{{ .Values.elasticsearch.ilm.hotRolloverMaxAge }}",
+                            "max_primary_shard_size": "{{ .Values.elasticsearch.ilm.hotRolloverMaxPrimaryShardSize }}"
+                          },
+                          "set_priority": { "priority": 100 }
+                        }
+                      },
+                      "warm": {
+                        "min_age": "{{ .Values.elasticsearch.ilm.warmMinAge }}",
+                        "actions": {
+                          "set_priority": { "priority": 50 },
+                          "forcemerge": { "max_num_segments": 1 }
+                        }
+                      },
+                      "delete": {
+                        "min_age": "{{ .Values.elasticsearch.ilm.deleteMinAge }}",
+                        "actions": {
+                          "delete": {}
+                        }
+                      }
+                    }
+                  }
+                }'
+
+              echo "Creating index template..."
+              curl -fsS --cacert "${CA}" -u "${AUTH}" \
+                -H "Content-Type: application/json" \
+                -X PUT "${ES}/_index_template/kubernetes-logs-template" \
+                -d '{
+                  "index_patterns": ["kubernetes-logs-*"],
+                  "priority": 200,
+                  "template": {
+                    "settings": {
+                      "index.lifecycle.name": "kubernetes-logs-ilm",
+                      "number_of_shards": {{ .Values.elasticsearch.ilm.numberOfShards }},
+                      "number_of_replicas": {{ .Values.elasticsearch.ilm.numberOfReplicas }},
+                      "codec": "best_compression",
+                      "index.mapping.total_fields.limit": {{ .Values.elasticsearch.ilm.totalFieldsLimit }},
+                      "index.refresh_interval": "{{ .Values.elasticsearch.ilm.refreshInterval }}",
+                      "index.routing.allocation.include._tier_preference": "data_hot,data_warm"
+                    },
+                    "mappings": {
+                      "dynamic": true,
+                      "properties": {
+                        "@timestamp": { "type": "date" },
+                        "ingested_at": { "type": "date" },
+                        "message": { "type": "match_only_text" },
+                        "severity": { "type": "keyword" },
+                        "level": { "type": "keyword" },
+                        "cluster": { "type": "keyword" },
+                        "namespace": { "type": "keyword" },
+                        "service": { "type": "keyword" },
+                        "team": { "type": "keyword" },
+                        "environment": { "type": "keyword" },
+                        "trace_id": { "type": "keyword" },
+                        "span_id": { "type": "keyword" },
+                        "pod": { "type": "keyword" },
+                        "container": { "type": "keyword" },
+                        "node": { "type": "keyword" }
+                      }
+                    }
+                  }
+                }'
+      volumes:
+        - name: es-ca
+          secret:
+            secretName: {{ include "cl.elasticCaSecret" . }}
+{{- end }}

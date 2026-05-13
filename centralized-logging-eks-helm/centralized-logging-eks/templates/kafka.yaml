@@ -1,0 +1,151 @@
+{{- if .Values.kafka.enabled }}
+apiVersion: {{ .Values.kafka.apiVersion }}
+kind: KafkaNodePool
+metadata:
+  name: controller
+  namespace: {{ include "cl.namespace" . }}
+  labels:
+{{ include "cl.labels" . | indent 4 }}
+    strimzi.io/cluster: {{ include "cl.kafkaName" . }}
+spec:
+  replicas: {{ .Values.kafka.controllers.replicas }}
+  roles:
+    - controller
+  storage:
+    type: jbod
+    volumes:
+      - id: 0
+        type: persistent-claim
+        size: {{ .Values.kafka.controllers.storageSize | quote }}
+        deleteClaim: {{ .Values.kafka.controllers.deleteClaim }}
+{{- if .Values.kafka.controllers.storageClassName }}
+        class: {{ .Values.kafka.controllers.storageClassName | quote }}
+{{- end }}
+  resources:
+{{ toYaml .Values.kafka.controllers.resources | indent 4 }}
+  template:
+    pod:
+      priorityClassName: {{ .Values.global.priorityClasses.criticalName }}
+{{- if .Values.kafka.podAntiAffinity }}
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    strimzi.io/cluster: {{ include "cl.kafkaName" . }}
+                    strimzi.io/name: {{ include "cl.kafkaName" . }}-kafka
+                topologyKey: kubernetes.io/hostname
+{{- end }}
+---
+apiVersion: {{ .Values.kafka.apiVersion }}
+kind: KafkaNodePool
+metadata:
+  name: broker
+  namespace: {{ include "cl.namespace" . }}
+  labels:
+{{ include "cl.labels" . | indent 4 }}
+    strimzi.io/cluster: {{ include "cl.kafkaName" . }}
+spec:
+  replicas: {{ .Values.kafka.brokers.replicas }}
+  roles:
+    - broker
+  storage:
+    type: jbod
+    volumes:
+      - id: 0
+        type: persistent-claim
+        size: {{ .Values.kafka.brokers.storageSize | quote }}
+        deleteClaim: {{ .Values.kafka.brokers.deleteClaim }}
+{{- if .Values.kafka.brokers.storageClassName }}
+        class: {{ .Values.kafka.brokers.storageClassName | quote }}
+{{- end }}
+  resources:
+{{ toYaml .Values.kafka.brokers.resources | indent 4 }}
+  template:
+    pod:
+      priorityClassName: {{ .Values.global.priorityClasses.criticalName }}
+{{- if .Values.kafka.podAntiAffinity }}
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    strimzi.io/cluster: {{ include "cl.kafkaName" . }}
+                    strimzi.io/name: {{ include "cl.kafkaName" . }}-kafka
+                topologyKey: kubernetes.io/hostname
+{{- end }}
+---
+apiVersion: {{ .Values.kafka.apiVersion }}
+kind: Kafka
+metadata:
+  name: {{ include "cl.kafkaName" . }}
+  namespace: {{ include "cl.namespace" . }}
+  labels:
+{{ include "cl.labels" . | indent 4 }}
+spec:
+  kafka:
+    version: {{ .Values.kafka.version | quote }}
+{{- if .Values.kafka.metadataVersion }}
+    metadataVersion: {{ .Values.kafka.metadataVersion | quote }}
+{{- end }}
+    listeners:
+      - name: plain
+        port: 9092
+        type: internal
+        tls: false
+      - name: tls
+        port: 9093
+        type: internal
+        tls: true
+    config:
+{{ toYaml .Values.kafka.config | indent 6 }}
+  entityOperator:
+    topicOperator: {}
+    userOperator: {}
+  kafkaExporter:
+    topicRegex: ".*"
+    groupRegex: ".*"
+  cruiseControl: {}
+---
+apiVersion: {{ .Values.kafka.apiVersion }}
+kind: KafkaTopic
+metadata:
+  name: {{ .Values.kafka.topics.raw.name | replace "." "-" }}
+  namespace: {{ include "cl.namespace" . }}
+  labels:
+{{ include "cl.labels" . | indent 4 }}
+    strimzi.io/cluster: {{ include "cl.kafkaName" . }}
+spec:
+  topicName: {{ .Values.kafka.topics.raw.name | quote }}
+  partitions: {{ .Values.kafka.topics.raw.partitions }}
+  replicas: {{ .Values.kafka.topics.raw.replicas }}
+  config:
+    cleanup.policy: delete
+    retention.ms: {{ .Values.kafka.topics.raw.retentionMs | quote }}
+    segment.bytes: {{ .Values.kafka.topics.raw.segmentBytes | quote }}
+    min.insync.replicas: {{ index .Values.kafka.config "min.insync.replicas" | quote }}
+    compression.type: {{ .Values.kafka.topics.raw.compressionType | quote }}
+---
+apiVersion: {{ .Values.kafka.apiVersion }}
+kind: KafkaTopic
+metadata:
+  name: {{ .Values.kafka.topics.dlq.name | replace "." "-" }}
+  namespace: {{ include "cl.namespace" . }}
+  labels:
+{{ include "cl.labels" . | indent 4 }}
+    strimzi.io/cluster: {{ include "cl.kafkaName" . }}
+spec:
+  topicName: {{ .Values.kafka.topics.dlq.name | quote }}
+  partitions: {{ .Values.kafka.topics.dlq.partitions }}
+  replicas: {{ .Values.kafka.topics.dlq.replicas }}
+  config:
+    cleanup.policy: delete
+    retention.ms: {{ .Values.kafka.topics.dlq.retentionMs | quote }}
+    segment.bytes: {{ .Values.kafka.topics.dlq.segmentBytes | quote }}
+    min.insync.replicas: {{ index .Values.kafka.config "min.insync.replicas" | quote }}
+    compression.type: {{ .Values.kafka.topics.dlq.compressionType | quote }}
+{{- end }}

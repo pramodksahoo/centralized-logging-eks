@@ -1,0 +1,171 @@
+{{- if and .Values.elastalert.enabled .Values.elasticsearch.enabled }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "cl.fullname" . }}-elastalert
+  namespace: {{ include "cl.namespace" . }}
+  labels:
+{{ include "cl.labels" . | indent 4 }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "cl.fullname" . }}-elastalert-config
+  namespace: {{ include "cl.namespace" . }}
+  labels:
+{{ include "cl.labels" . | indent 4 }}
+data:
+  config.yaml: |
+    rules_folder: /opt/elastalert/rules
+    run_every:
+      minutes: 1
+    buffer_time:
+      minutes: 15
+
+    es_host: {{ include "cl.esName" . }}-es-http.{{ include "cl.namespace" . }}.svc.cluster.local
+    es_port: 9200
+    use_ssl: true
+    verify_certs: true
+    ca_certs: /etc/elastalert/es-ca/ca.crt
+
+    es_username: elastic
+    es_password: ${ELASTIC_PASSWORD}
+
+    writeback_index: elastalert_status
+
+    alert_time_limit:
+      days: 2
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "cl.fullname" . }}-elastalert-rules
+  namespace: {{ include "cl.namespace" . }}
+  labels:
+{{ include "cl.labels" . | indent 4 }}
+data:
+{{- if .Values.elastalert.rules.highErrorRate.enabled }}
+  high-error-rate.yaml: |
+    name: High error rate by namespace and service
+    type: frequency
+    index: kubernetes-logs-*
+    num_events: {{ .Values.elastalert.rules.highErrorRate.numEvents }}
+    timeframe:
+      minutes: {{ .Values.elastalert.rules.highErrorRate.timeframeMinutes }}
+    filter:
+      - terms:
+          severity:
+            - error
+            - fatal
+            - critical
+    query_key:
+      - namespace
+      - service
+    alert:
+      - {{ .Values.elastalert.alertOutput }}
+    alert_subject: "High error rate detected: {0}/{1}"
+    alert_subject_args:
+      - namespace
+      - service
+    alert_text: |
+      High error rate detected.
+
+      Namespace: {0}
+      Service: {1}
+
+      Check Kibana data view: kubernetes-logs-*
+    alert_text_args:
+      - namespace
+      - service
+{{- end }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "cl.fullname" . }}-elastalert
+  namespace: {{ include "cl.namespace" . }}
+  labels:
+{{ include "cl.labels" . | indent 4 }}
+    app.kubernetes.io/name: elastalert
+spec:
+  replicas: {{ .Values.elastalert.replicas }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: elastalert
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: elastalert
+        app.kubernetes.io/instance: {{ .Release.Name }}
+    spec:
+      serviceAccountName: {{ include "cl.fullname" . }}-elastalert
+      priorityClassName: {{ .Values.global.priorityClasses.criticalName }}
+{{- with .Values.elastalert.nodeSelector }}
+      nodeSelector:
+{{ toYaml . | indent 8 }}
+{{- end }}
+{{- with .Values.elastalert.tolerations }}
+      tolerations:
+{{ toYaml . | indent 8 }}
+{{- end }}
+{{- with .Values.elastalert.affinity }}
+      affinity:
+{{ toYaml . | indent 8 }}
+{{- end }}
+      containers:
+        - name: elastalert
+          image: "{{ .Values.elastalert.image.repository }}:{{ .Values.elastalert.image.tag }}"
+          imagePullPolicy: {{ .Values.global.imagePullPolicy }}
+          env:
+            - name: ELASTIC_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "cl.elasticPasswordSecret" . }}
+                  key: elastic
+          command:
+            - /bin/sh
+            - -ec
+            - |
+              sed "s|\${ELASTIC_PASSWORD}|${ELASTIC_PASSWORD}|g" /config/config.yaml > /tmp/config.yaml
+              elastalert-create-index --config /tmp/config.yaml || true
+              exec elastalert --config /tmp/config.yaml --verbose
+          resources:
+{{ toYaml .Values.elastalert.resources | indent 12 }}
+          volumeMounts:
+            - name: elastalert-config
+              mountPath: /config
+              readOnly: true
+            - name: elastalert-rules
+              mountPath: /opt/elastalert/rules
+              readOnly: true
+            - name: es-ca
+              mountPath: /etc/elastalert/es-ca
+              readOnly: true
+      volumes:
+        - name: elastalert-config
+          configMap:
+            name: {{ include "cl.fullname" . }}-elastalert-config
+        - name: elastalert-rules
+          configMap:
+            name: {{ include "cl.fullname" . }}-elastalert-rules
+        - name: es-ca
+          secret:
+            secretName: {{ include "cl.elasticCaSecret" . }}
+{{- if .Values.elastalert.podDisruptionBudget.enabled }}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "cl.fullname" . }}-elastalert
+  namespace: {{ include "cl.namespace" . }}
+  labels:
+{{ include "cl.labels" . | indent 4 }}
+spec:
+  minAvailable: {{ .Values.elastalert.podDisruptionBudget.minAvailable }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: elastalert
+      app.kubernetes.io/instance: {{ .Release.Name }}
+{{- end }}
+{{- end }}

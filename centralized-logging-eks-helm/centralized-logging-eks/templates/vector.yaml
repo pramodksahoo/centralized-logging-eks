@@ -1,0 +1,381 @@
+{{- if and .Values.vector.enabled .Values.kafka.enabled .Values.elasticsearch.enabled }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "cl.vectorName" . }}
+  namespace: {{ include "cl.namespace" . }}
+  labels:
+{{ include "cl.labels" . | indent 4 }}
+{{- if and .Values.s3.enabled (eq .Values.s3.authMode "irsa") }}
+  annotations:
+{{ toYaml .Values.s3.serviceAccountAnnotations | indent 4 }}
+{{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "cl.vectorName" . }}
+  namespace: {{ include "cl.namespace" . }}
+  labels:
+{{ include "cl.labels" . | indent 4 }}
+spec:
+  clusterIP: None
+  selector:
+    app.kubernetes.io/name: vector-aggregator
+    app.kubernetes.io/instance: {{ .Release.Name }}
+  ports:
+    - name: api
+      port: {{ .Values.vector.apiPort }}
+      targetPort: {{ .Values.vector.apiPort }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "cl.vectorName" . }}-config
+  namespace: {{ include "cl.namespace" . }}
+  labels:
+{{ include "cl.labels" . | indent 4 }}
+data:
+  vector.yaml: |
+    data_dir: {{ .Values.vector.dataDir }}
+
+    api:
+      enabled: true
+      address: 0.0.0.0:{{ .Values.vector.apiPort }}
+      playground: false
+
+    sources:
+      kafka_logs:
+        type: kafka
+        bootstrap_servers: {{ include "cl.kafkaName" . }}-kafka-bootstrap.{{ include "cl.namespace" . }}.svc.cluster.local:9092
+        group_id: {{ .Values.vector.kafka.groupId }}
+        topics:
+          - {{ .Values.kafka.topics.raw.name }}
+        auto_offset_reset: {{ .Values.vector.kafka.autoOffsetReset }}
+        commit_interval_ms: {{ .Values.vector.kafka.commitIntervalMs }}
+        session_timeout_ms: {{ .Values.vector.kafka.sessionTimeoutMs }}
+        drain_timeout_ms: 10000
+        decoding:
+          codec: json
+        librdkafka_options:
+          client.id: vector-aggregator
+          fetch.min.bytes: "1048576"
+          fetch.wait.max.ms: "500"
+          queued.min.messages: "100000"
+
+    transforms:
+      normalize_logs:
+        type: remap
+        inputs:
+          - kafka_logs
+        source: |
+          .ingested_at = now()
+
+          if !exists(."@timestamp") {
+            ."@timestamp" = now()
+          }
+
+          .cluster = get_env_var("CLUSTER_NAME") ?? "unknown-cluster"
+
+          .namespace = .kubernetes.namespace_name ?? .namespace ?? "unknown"
+          .pod = .kubernetes.pod_name ?? .pod ?? "unknown"
+          .container = .kubernetes.container_name ?? .container ?? "unknown"
+          .node = .kubernetes.host ?? .node ?? "unknown"
+
+          .service = .kubernetes.labels."app.kubernetes.io/name" ??
+                     .kubernetes.labels.app ??
+                     .service ??
+                     .container ??
+                     "unknown"
+
+          .team = .kubernetes.labels."app.kubernetes.io/team" ??
+                  .team ??
+                  "unknown"
+
+          .environment = .kubernetes.labels.environment ??
+                         .environment ??
+                         get_env_var("ENVIRONMENT") ??
+                         "prod"
+
+          if exists(.level) {
+            .severity = downcase(to_string(.level) ?? "info")
+          } else if exists(.log_level) {
+            .severity = downcase(to_string(.log_level) ?? "info")
+          } else if exists(.severity_text) {
+            .severity = downcase(to_string(.severity_text) ?? "info")
+          } else {
+            .severity = "info"
+          }
+
+          if exists(.message) {
+            .message = to_string(.message) ?? encode_json(.)
+          } else if exists(.msg) {
+            .message = to_string(.msg) ?? encode_json(.)
+          } else if exists(.log) {
+            .message = to_string(.log) ?? encode_json(.)
+          } else {
+            .message = encode_json(.)
+          }
+
+          .index_prefix = "kubernetes-logs-" + replace!(.namespace, r'[^a-zA-Z0-9_\-]+', "-")
+
+      route_logs:
+        type: route
+        inputs:
+          - normalize_logs
+        route:
+          all_logs: "true"
+          error_logs: '.severity == "error" || .severity == "fatal" || .severity == "critical"'
+
+    sinks:
+      elasticsearch_hot:
+        type: elasticsearch
+        inputs:
+          - route_logs.all_logs
+        endpoints:
+          - https://{{ include "cl.esName" . }}-es-http.{{ include "cl.namespace" . }}.svc.cluster.local:9200
+        api_version: auto
+        mode: bulk
+        compression: gzip
+        auth:
+          strategy: basic
+          user: elastic
+          password: ${ELASTIC_PASSWORD}
+        tls:
+          ca_file: /etc/vector/es-ca/ca.crt
+          verify_certificate: true
+          verify_hostname: true
+        bulk:
+          index: "{{ "{{" }} index_prefix {{ "}}" }}-%Y.%m.%d"
+          template_fallback_index: "kubernetes-logs-unknown-%Y.%m.%d"
+        encoding:
+          codec: json
+        batch:
+          max_events: {{ .Values.vector.elasticsearch.batchMaxEvents }}
+          timeout_secs: {{ .Values.vector.elasticsearch.batchTimeoutSecs }}
+        buffer:
+          type: disk
+          max_size: {{ .Values.vector.elasticsearch.diskBufferBytes }}
+          when_full: block
+        acknowledgements:
+          enabled: true
+        request:
+          timeout_secs: {{ .Values.vector.elasticsearch.requestTimeoutSecs }}
+          retry_attempts: {{ .Values.vector.elasticsearch.retryAttempts }}
+{{- if .Values.s3.enabled }}
+
+      s3_archive:
+        type: aws_s3
+        inputs:
+          - route_logs.all_logs
+        bucket: ${AWS_S3_BUCKET}
+        region: ${AWS_REGION}
+        key_prefix: "{{ .Values.s3.prefix }}/cluster={{ "{{" }} cluster {{ "}}" }}/namespace={{ "{{" }} namespace {{ "}}" }}/team={{ "{{" }} team {{ "}}" }}/date=%F/"
+        compression: gzip
+        content_encoding: gzip
+        content_type: application/json
+        filename_extension: json
+        filename_append_uuid: true
+        encoding:
+          codec: json
+        batch:
+          max_bytes: {{ .Values.vector.s3.batchMaxBytes }}
+          timeout_secs: {{ .Values.vector.s3.batchTimeoutSecs }}
+        buffer:
+          type: disk
+          max_size: {{ .Values.vector.s3.archiveDiskBufferBytes }}
+          when_full: block
+        acknowledgements:
+          enabled: true
+        request:
+          timeout_secs: {{ .Values.vector.s3.requestTimeoutSecs }}
+          retry_attempts: {{ .Values.vector.s3.retryAttempts }}
+
+      dlq_s3_for_errors:
+        type: aws_s3
+        inputs:
+          - route_logs.error_logs
+        bucket: ${AWS_S3_BUCKET}
+        region: ${AWS_REGION}
+        key_prefix: "{{ .Values.s3.prefix }}/dlq/errors/cluster={{ "{{" }} cluster {{ "}}" }}/namespace={{ "{{" }} namespace {{ "}}" }}/date=%F/"
+        compression: gzip
+        content_encoding: gzip
+        content_type: application/json
+        filename_extension: json
+        encoding:
+          codec: json
+        batch:
+          max_bytes: 52428800
+          timeout_secs: {{ .Values.vector.s3.batchTimeoutSecs }}
+        buffer:
+          type: disk
+          max_size: {{ .Values.vector.s3.errorDiskBufferBytes }}
+          when_full: block
+        request:
+          timeout_secs: {{ .Values.vector.s3.requestTimeoutSecs }}
+          retry_attempts: {{ .Values.vector.s3.retryAttempts }}
+{{- end }}
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "cl.vectorName" . }}
+  namespace: {{ include "cl.namespace" . }}
+  labels:
+{{ include "cl.labels" . | indent 4 }}
+    app.kubernetes.io/name: vector-aggregator
+spec:
+  serviceName: {{ include "cl.vectorName" . }}
+  replicas: {{ .Values.vector.replicas }}
+  minReadySeconds: {{ .Values.vector.minReadySeconds }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: vector-aggregator
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  updateStrategy:
+    type: RollingUpdate
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: vector-aggregator
+        app.kubernetes.io/instance: {{ .Release.Name }}
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: {{ .Values.vector.apiPort | quote }}
+        prometheus.io/path: "/metrics"
+    spec:
+      serviceAccountName: {{ include "cl.vectorName" . }}
+      priorityClassName: {{ .Values.global.priorityClasses.criticalName }}
+      terminationGracePeriodSeconds: 90
+      securityContext:
+        fsGroup: 1000
+{{- with .Values.vector.nodeSelector }}
+      nodeSelector:
+{{ toYaml . | indent 8 }}
+{{- end }}
+{{- with .Values.vector.tolerations }}
+      tolerations:
+{{ toYaml . | indent 8 }}
+{{- end }}
+{{- with .Values.vector.affinity }}
+      affinity:
+{{ toYaml . | indent 8 }}
+{{- end }}
+      containers:
+        - name: vector
+          image: "{{ .Values.vector.image.repository }}:{{ .Values.vector.image.tag }}"
+          imagePullPolicy: {{ .Values.global.imagePullPolicy }}
+          args:
+            - --config
+            - /etc/vector/vector.yaml
+          env:
+            - name: CLUSTER_NAME
+              value: {{ .Values.global.clusterName | quote }}
+            - name: ENVIRONMENT
+              value: {{ .Values.global.environment | quote }}
+            - name: ELASTIC_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "cl.elasticPasswordSecret" . }}
+                  key: elastic
+            - name: AWS_REGION
+              value: {{ .Values.aws.region | quote }}
+            - name: AWS_S3_BUCKET
+              value: {{ .Values.s3.bucket | quote }}
+{{- if and .Values.s3.enabled (eq .Values.s3.authMode "secret") }}
+            - name: AWS_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "cl.s3SecretName" . }}
+                  key: AWS_ACCESS_KEY_ID
+            - name: AWS_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "cl.s3SecretName" . }}
+                  key: AWS_SECRET_ACCESS_KEY
+{{- end }}
+          ports:
+            - name: api
+              containerPort: {{ .Values.vector.apiPort }}
+          resources:
+{{ toYaml .Values.vector.resources | indent 12 }}
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: {{ .Values.vector.apiPort }}
+            initialDelaySeconds: 15
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: {{ .Values.vector.apiPort }}
+            initialDelaySeconds: 60
+            periodSeconds: 30
+          volumeMounts:
+            - name: config
+              mountPath: /etc/vector
+              readOnly: true
+            - name: vector-data
+              mountPath: {{ .Values.vector.dataDir }}
+            - name: es-ca
+              mountPath: /etc/vector/es-ca
+              readOnly: true
+      volumes:
+        - name: config
+          configMap:
+            name: {{ include "cl.vectorName" . }}-config
+        - name: es-ca
+          secret:
+            secretName: {{ include "cl.elasticCaSecret" . }}
+  volumeClaimTemplates:
+    - metadata:
+        name: vector-data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+{{- if .Values.vector.pvc.storageClassName }}
+        storageClassName: {{ .Values.vector.pvc.storageClassName | quote }}
+{{- end }}
+        resources:
+          requests:
+            storage: {{ .Values.vector.pvc.storageSize | quote }}
+{{- if .Values.vector.hpa.enabled }}
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ include "cl.vectorName" . }}
+  namespace: {{ include "cl.namespace" . }}
+  labels:
+{{ include "cl.labels" . | indent 4 }}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: StatefulSet
+    name: {{ include "cl.vectorName" . }}
+  minReplicas: {{ .Values.vector.hpa.minReplicas }}
+  maxReplicas: {{ .Values.vector.hpa.maxReplicas }}
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: {{ .Values.vector.hpa.cpuAverageUtilization }}
+{{- end }}
+{{- if .Values.vector.podDisruptionBudget.enabled }}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "cl.vectorName" . }}
+  namespace: {{ include "cl.namespace" . }}
+  labels:
+{{ include "cl.labels" . | indent 4 }}
+spec:
+  minAvailable: {{ .Values.vector.podDisruptionBudget.minAvailable }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: vector-aggregator
+      app.kubernetes.io/instance: {{ .Release.Name }}
+{{- end }}
+{{- end }}

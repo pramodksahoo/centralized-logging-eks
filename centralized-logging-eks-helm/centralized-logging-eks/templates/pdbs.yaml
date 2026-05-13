@@ -1,0 +1,15 @@
+{{- if and .Values.fluentBit.enabled .Values.kafka.enabled }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "cl.fullname" . }}-fluent-bit
+  namespace: {{ include "cl.namespace" . }}
+  labels:
+{{ include "cl.labels" . | indent 4 }}
+spec:
+  maxUnavailable: 10%
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: fluent-bit
+      app.kubernetes.io/instance: {{ .Release.Name }}
+{{- end }}

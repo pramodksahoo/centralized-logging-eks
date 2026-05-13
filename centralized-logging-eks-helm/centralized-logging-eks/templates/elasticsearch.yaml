@@ -1,0 +1,161 @@
+{{- if .Values.elasticsearch.enabled }}
+apiVersion: elasticsearch.k8s.elastic.co/v1
+kind: Elasticsearch
+metadata:
+  name: {{ include "cl.esName" . }}
+  namespace: {{ include "cl.namespace" . }}
+  labels:
+{{ include "cl.labels" . | indent 4 }}
+spec:
+  version: {{ .Values.elasticsearch.version | quote }}
+  volumeClaimDeletePolicy: {{ .Values.elasticsearch.volumeClaimDeletePolicy }}
+  http:
+    tls:
+      selfSignedCertificate:
+        disabled: {{ not .Values.elasticsearch.tlsSelfSigned }}
+  nodeSets:
+    - name: masters
+      count: {{ .Values.elasticsearch.masters.count }}
+      config:
+        node.roles: ["master"]
+        xpack.security.authc.api_key.enabled: true
+      podTemplate:
+        metadata:
+          labels:
+            logging.altimetrik.com/es-role: master
+        spec:
+          priorityClassName: {{ .Values.global.priorityClasses.criticalName }}
+          terminationGracePeriodSeconds: 180
+          containers:
+            - name: elasticsearch
+              resources:
+{{ toYaml .Values.elasticsearch.masters.resources | indent 16 }}
+              env:
+                - name: ES_JAVA_OPTS
+                  value: "-Xms{{ .Values.elasticsearch.masters.heap }} -Xmx{{ .Values.elasticsearch.masters.heap }}"
+{{- if .Values.elasticsearch.podAntiAffinity }}
+          affinity:
+            podAntiAffinity:
+              preferredDuringSchedulingIgnoredDuringExecution:
+                - weight: 100
+                  podAffinityTerm:
+                    labelSelector:
+                      matchLabels:
+                        elasticsearch.k8s.elastic.co/cluster-name: {{ include "cl.esName" . }}
+                        logging.altimetrik.com/es-role: master
+                    topologyKey: kubernetes.io/hostname
+{{- end }}
+      volumeClaimTemplates:
+        - metadata:
+            name: elasticsearch-data
+          spec:
+            accessModes: ["ReadWriteOnce"]
+{{- if .Values.elasticsearch.masters.storageClassName }}
+            storageClassName: {{ .Values.elasticsearch.masters.storageClassName | quote }}
+{{- end }}
+            resources:
+              requests:
+                storage: {{ .Values.elasticsearch.masters.storageSize | quote }}
+
+    - name: hot-data
+      count: {{ .Values.elasticsearch.hotData.count }}
+      config:
+        node.roles: ["data_hot", "data_content", "ingest", "transform", "remote_cluster_client"]
+        xpack.security.authc.api_key.enabled: true
+      podTemplate:
+        metadata:
+          labels:
+            logging.altimetrik.com/es-role: hot-data
+        spec:
+          priorityClassName: {{ .Values.global.priorityClasses.criticalName }}
+          terminationGracePeriodSeconds: 300
+{{- if .Values.elasticsearch.sysctlInitContainer.enabled }}
+          initContainers:
+            - name: sysctl
+              securityContext:
+                privileged: true
+                runAsUser: 0
+              command: ["sh", "-c", "sysctl -w vm.max_map_count=262144"]
+{{- end }}
+          containers:
+            - name: elasticsearch
+              resources:
+{{ toYaml .Values.elasticsearch.hotData.resources | indent 16 }}
+              env:
+                - name: ES_JAVA_OPTS
+                  value: "-Xms{{ .Values.elasticsearch.hotData.heap }} -Xmx{{ .Values.elasticsearch.hotData.heap }}"
+{{- if .Values.elasticsearch.podAntiAffinity }}
+          affinity:
+            podAntiAffinity:
+              preferredDuringSchedulingIgnoredDuringExecution:
+                - weight: 100
+                  podAffinityTerm:
+                    labelSelector:
+                      matchLabels:
+                        elasticsearch.k8s.elastic.co/cluster-name: {{ include "cl.esName" . }}
+                        logging.altimetrik.com/es-role: hot-data
+                    topologyKey: kubernetes.io/hostname
+{{- end }}
+      volumeClaimTemplates:
+        - metadata:
+            name: elasticsearch-data
+          spec:
+            accessModes: ["ReadWriteOnce"]
+{{- if .Values.elasticsearch.hotData.storageClassName }}
+            storageClassName: {{ .Values.elasticsearch.hotData.storageClassName | quote }}
+{{- end }}
+            resources:
+              requests:
+                storage: {{ .Values.elasticsearch.hotData.storageSize | quote }}
+
+    - name: warm-data
+      count: {{ .Values.elasticsearch.warmData.count }}
+      config:
+        node.roles: ["data_warm", "remote_cluster_client"]
+        xpack.security.authc.api_key.enabled: true
+      podTemplate:
+        metadata:
+          labels:
+            logging.altimetrik.com/es-role: warm-data
+        spec:
+          priorityClassName: {{ .Values.global.priorityClasses.criticalName }}
+          terminationGracePeriodSeconds: 300
+{{- if .Values.elasticsearch.sysctlInitContainer.enabled }}
+          initContainers:
+            - name: sysctl
+              securityContext:
+                privileged: true
+                runAsUser: 0
+              command: ["sh", "-c", "sysctl -w vm.max_map_count=262144"]
+{{- end }}
+          containers:
+            - name: elasticsearch
+              resources:
+{{ toYaml .Values.elasticsearch.warmData.resources | indent 16 }}
+              env:
+                - name: ES_JAVA_OPTS
+                  value: "-Xms{{ .Values.elasticsearch.warmData.heap }} -Xmx{{ .Values.elasticsearch.warmData.heap }}"
+{{- if .Values.elasticsearch.podAntiAffinity }}
+          affinity:
+            podAntiAffinity:
+              preferredDuringSchedulingIgnoredDuringExecution:
+                - weight: 100
+                  podAffinityTerm:
+                    labelSelector:
+                      matchLabels:
+                        elasticsearch.k8s.elastic.co/cluster-name: {{ include "cl.esName" . }}
+                        logging.altimetrik.com/es-role: warm-data
+                    topologyKey: kubernetes.io/hostname
+{{- end }}
+      volumeClaimTemplates:
+        - metadata:
+            name: elasticsearch-data
+          spec:
+            accessModes: ["ReadWriteOnce"]
+{{- if .Values.elasticsearch.warmData.storageClassName }}
+            storageClassName: {{ .Values.elasticsearch.warmData.storageClassName | quote }}
+{{- end }}
+            resources:
+              requests:
+                storage: {{ .Values.elasticsearch.warmData.storageSize | quote }}
+{{- end }}

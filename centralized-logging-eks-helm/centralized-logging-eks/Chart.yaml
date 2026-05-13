@@ -1,0 +1,28 @@
+apiVersion: v2
+name: centralized-logging-eks
+description: Umbrella Helm chart for EKS centralized logging using Fluent Bit, Kafka, Vector, Elasticsearch, S3, Kibana, and ElastAlert.
+type: application
+version: 0.1.0
+appVersion: "9.4.1"
+home: https://example.com/centralized-logging-eks
+keywords:
+  - eks
+  - kubernetes
+  - logging
+  - fluent-bit
+  - kafka
+  - vector
+  - elasticsearch
+  - kibana
+  - elastalert
+maintainers:
+  - name: Platform Engineering
+dependencies:
+  - name: strimzi-kafka-operator
+    version: "1.0.0"
+    repository: "https://strimzi.io/charts/"
+    condition: operators.strimzi.enabled
+  - name: eck-operator
+    version: "3.4.0"
+    repository: "https://helm.elastic.co"
+    condition: operators.eck.enabled
